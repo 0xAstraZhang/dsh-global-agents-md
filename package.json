@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Edit the user-global AGENTS.md of DSH from Settings.",
+  "description": "Edit the user-global AGENTS.md of DSH from the left sidebar.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
