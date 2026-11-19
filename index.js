@@ -138,7 +138,7 @@ function json(body) {
 }
 
 /**
- * Describe one failure for the browser half.
+ * Describe one thrown value.
  * @param error - the thrown value.
  * @returns the message text.
  */
@@ -197,7 +197,7 @@ async function handleWrite(file, display, request) {
 }
 
 /**
- * Register the editor's two routes for the life of this plugin.
+ * Register the editor's routes for the life of this plugin.
  * @param ctx - the plugin context.
  */
 export function apply(ctx) {

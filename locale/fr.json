@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Éditeur de règles globales",
-    "description": "Modifiez et enregistrez l’AGENTS.md global de l’utilisateur dans Réglages → Règles globales, sans chercher le fichier. La page lit et écrit ~/.dsh/AGENTS.md ; les modifications s’appliquent aux nouvelles sessions, pas à la session en cours."
+    "description": "Ouvrez « Règles globales » dans la barre latérale gauche, sous Plugins et Automatisations, pour modifier l’AGENTS.md global de l’utilisateur de DSH (~/.dsh/AGENTS.md) sans chercher le fichier. L’enregistrement est atomique et n’écrase pas un fichier modifié depuis son chargement. Les modifications s’appliquent aux nouvelles sessions, pas à la session en cours."
   }
 }

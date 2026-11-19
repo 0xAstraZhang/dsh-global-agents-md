@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Global rules editor",
-    "description": "Edit and save DSH's user-global AGENTS.md from Settings → Global rules, without hunting for the file. The page reads and writes ~/.dsh/AGENTS.md; changes apply to new sessions, not the current one."
+    "description": "Open Global rules in the left sidebar, below Plugins and Automations, to edit DSH's user-global AGENTS.md (~/.dsh/AGENTS.md) without locating the file. Saves are atomic and refuse to clobber a file changed after loading. Changes apply to new sessions, not the current one."
   }
 }

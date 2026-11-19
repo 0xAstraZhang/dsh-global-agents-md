@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Editor de reglas globales",
-    "description": "Edite y guarde el AGENTS.md global del usuario de DSH desde Ajustes → Reglas globales, sin buscar el archivo. La página lee y escribe ~/.dsh/AGENTS.md; los cambios se aplican a las sesiones nuevas, no a la actual."
+    "description": "Abra «Reglas globales» en la barra lateral izquierda, bajo Complementos y Automatizaciones, para editar el AGENTS.md global del usuario de DSH (~/.dsh/AGENTS.md) sin buscar el archivo. Guarda de forma atómica y no sobrescribe un archivo cambiado tras cargarlo. Los cambios se aplican a las sesiones nuevas, no a la actual."
   }
 }
