@@ -1,24 +1,38 @@
 /**
- * Host half of the global rules editor.
+ * Host half of the rules editor.
  *
- * The browser half edits two AGENTS.md files: the user-global one that
- * `@deepseek-ai/dsh-agent-instructions` loads for every session, and the one at
- * the root of a registered workspace. Both are reached through exact Fetch
- * routes, so no generated Remote namespace is involved.
+ * The browser half edits the user-global AGENTS.md and the rules files of one
+ * workspace. A workspace can hold several: the chain that
+ * `@deepseek-ai/dsh-agent-instructions` loads runs from the project root down,
+ * so the page lists every rules file found in the workspace instead of assuming
+ * a single root file. All access goes through exact Fetch routes, and every
+ * project path is resolved here, never taken from the request.
  */
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises'
+import { chmod, mkdir, open, readdir, readFile, rename, stat, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 
 export const inject = ['connection', 'workspaceRegistry']
 
 const TARGETS_PATH = '/api/global-agents-md/targets'
+const FILES_PATH = '/api/global-agents-md/files'
 const READ_PATH = '/api/global-agents-md/read'
 const WRITE_PATH = '/api/global-agents-md/write'
 
-/** The target key that addresses the user-global file. */
-const GLOBAL_TARGET = 'global'
+/** The file name the editor offers when a directory has no rules yet. */
+export const ROOT_RULE = 'AGENTS.md'
+
+/** Rule file names the instruction chain treats as a directory's own rules. */
+export const RULE_NAMES = ['AGENTS.md', 'AGENTS.local.md']
+
+/** Directories a rules scan never descends into. */
+const SKIP_NAMES = new Set(['.git', '.hg', '.svn', 'node_modules'])
+
+/** Bounds of one workspace scan, so a large tree cannot stall the request. */
+const MAX_DEPTH = 8
+const MAX_DIRS = 4000
+const MAX_FILES = 200
 
 /** Cap on the file the editor writes back, in bytes. */
 const MAX_BYTES = 256 * 1024
@@ -65,28 +79,94 @@ export function agentsMdPath(env = process.env) {
 }
 
 /**
- * Name the target that addresses one workspace's project file.
- * @param workspaceId - the registered workspace id.
- * @returns the target key.
+ * Order rule paths broad to specific, the order the instruction chain renders:
+ * shallower directories first, and within one directory the base file before
+ * its local overlay.
+ * @param a - one workspace-relative path.
+ * @param b - the other workspace-relative path.
+ * @returns the comparison result.
  */
-export function workspaceTarget(workspaceId) {
-  return `workspace:${workspaceId}`
+function compareRulePaths(a, b) {
+  const depth = a.split('/').length - b.split('/').length
+  if (depth !== 0) return depth
+  const rank = (path) => RULE_NAMES.indexOf(path.split('/').at(-1))
+  const byName = rank(a) - rank(b)
+  return byName !== 0 ? byName : a.localeCompare(b)
 }
 
 /**
- * Resolve a target key to the file it edits.
- * @param target - `global` or `workspace:<id>`.
- * @param registry - the workspace registry, when available.
- * @returns the resolved target, or undefined when the target is unknown.
+ * Turn a workspace-relative path into an absolute rule file path, rejecting
+ * anything that is not a rule file inside the workspace.
+ * @param root - absolute workspace directory.
+ * @param relative - workspace-relative path such as `packages/app/AGENTS.md`.
+ * @returns the absolute file path, or undefined when the path is not accepted.
  */
-export function resolveTarget(target, registry) {
-  if (target === GLOBAL_TARGET) {
+export function resolveProjectFile(root, relative) {
+  if (typeof relative !== 'string' || relative === '') return undefined
+  if (relative.includes('\\') || relative.includes('\0')) return undefined
+  if (relative.startsWith('/')) return undefined
+  const segments = relative.split('/')
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return undefined
+  if (!RULE_NAMES.includes(segments[segments.length - 1])) return undefined
+  const file = join(root, ...segments)
+  // Belt and braces after the segment checks: the result must stay inside root.
+  if (!file.startsWith(root.endsWith(sep) ? root : root + sep)) return undefined
+  return file
+}
+
+/**
+ * List every rule file inside one workspace, root file included when present.
+ * @param root - absolute workspace directory.
+ * @returns workspace-relative rule paths in load order.
+ */
+export async function discoverRuleFiles(root) {
+  const found = []
+  const queue = [{ directory: root, prefix: '', depth: 0 }]
+  let visited = 0
+  while (queue.length > 0 && visited < MAX_DIRS && found.length < MAX_FILES) {
+    const { directory, prefix, depth } = queue.shift()
+    visited += 1
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (SKIP_NAMES.has(entry.name) || entry.name.startsWith('.')) continue
+        if (depth >= MAX_DEPTH) continue
+        queue.push({
+          directory: join(directory, entry.name),
+          prefix: prefix === '' ? entry.name : `${prefix}/${entry.name}`,
+          depth: depth + 1,
+        })
+      } else if (entry.isFile() && RULE_NAMES.includes(entry.name)) {
+        found.push(prefix === '' ? entry.name : `${prefix}/${entry.name}`)
+        if (found.length >= MAX_FILES) break
+      }
+    }
+  }
+  return found.sort(compareRulePaths)
+}
+
+/**
+ * Resolve one request's scope to the file it edits.
+ * @param request - the scope, workspace id, and workspace-relative path.
+ * @param registry - the workspace registry, when available.
+ * @returns the absolute file and its display path, or undefined when unknown.
+ */
+export function resolveRequest(request, registry) {
+  if (request?.scope === 'global') {
     return { file: agentsMdPath(), display: displayAgentsPath() }
   }
-  if (typeof target !== 'string' || !target.startsWith('workspace:')) return undefined
-  const workspace = registry?.get(target.slice('workspace:'.length))
+  if (request?.scope !== 'project') return undefined
+  const workspace = registry?.get(request.workspaceId)
   if (workspace === undefined) return undefined
-  return { file: join(workspace.path, 'AGENTS.md'), display: `${workspace.title}/AGENTS.md` }
+  const relative = typeof request.path === 'string' && request.path !== '' ? request.path : ROOT_RULE
+  const file = resolveProjectFile(workspace.path, relative)
+  if (file === undefined) return undefined
+  return { file, display: `${workspace.title}/${relative}` }
 }
 
 /**
@@ -145,7 +225,7 @@ export async function saveAgents(file, text, expectedVersion) {
     }
   }
   await mkdir(dirname(file), { recursive: true })
-  const temporary = join(dirname(file), `.AGENTS.md.${process.pid}.${Date.now()}.tmp`)
+  const temporary = join(dirname(file), `.${Date.now()}.${process.pid}.AGENTS.md.tmp`)
   let handle
   try {
     handle = await open(temporary, 'w')
@@ -192,7 +272,7 @@ function messageOf(error) {
 }
 
 /**
- * Answer the target list: the global file and every registered workspace.
+ * Answer the global file and every registered workspace.
  * @param registry - the workspace registry.
  * @returns the JSON response.
  */
@@ -200,22 +280,18 @@ async function handleTargets(registry) {
   try {
     const workspaces = []
     for (const workspace of registry?.list() ?? []) {
-      const target = workspaceTarget(workspace.id)
+      const base = { id: workspace.id, title: workspace.title, display: `${workspace.title}/${ROOT_RULE}` }
       try {
-        workspaces.push({
-          target,
-          title: workspace.title,
-          display: `${workspace.title}/AGENTS.md`,
-          ...(await describeFile(join(workspace.path, 'AGENTS.md'))),
-        })
+        workspaces.push({ ...base, ...(await describeFile(join(workspace.path, ROOT_RULE))) })
       } catch (error) {
-        workspaces.push({ target, title: workspace.title, display: `${workspace.title}/AGENTS.md`, exists: false, bytes: 0, error: messageOf(error) })
+        workspaces.push({ ...base, exists: false, bytes: 0, error: messageOf(error) })
       }
     }
     return json({
       ok: true,
-      global: { target: GLOBAL_TARGET, display: displayAgentsPath(), ...(await describeFile(agentsMdPath())) },
+      global: { display: displayAgentsPath(), ...(await describeFile(agentsMdPath())) },
       workspaces,
+      rootRule: ROOT_RULE,
     })
   } catch (error) {
     return json({ ok: false, code: 'targets-failed', message: messageOf(error) })
@@ -223,23 +299,52 @@ async function handleTargets(registry) {
 }
 
 /**
- * Answer a read request for one target.
- * @param target - the target key.
+ * Answer every rules file one workspace holds.
+ * @param workspaceId - the registered workspace id.
  * @param registry - the workspace registry.
  * @returns the JSON response.
  */
-async function handleRead(target, registry) {
-  const resolved = resolveTarget(target, registry)
-  if (resolved === undefined) return json({ ok: false, code: 'unknown-target', message: `unknown target ${String(target)}` })
+async function handleFiles(workspaceId, registry) {
+  const workspace = registry?.get(workspaceId)
+  if (workspace === undefined) {
+    return json({ ok: false, code: 'unknown-target', message: `unknown workspace ${String(workspaceId)}` })
+  }
   try {
-    return json({ ok: true, target, display: resolved.display, absolutePath: resolved.file, ...(await readAgents(resolved.file)) })
+    const paths = await discoverRuleFiles(workspace.path)
+    if (!paths.includes(ROOT_RULE)) paths.unshift(ROOT_RULE)
+    const files = []
+    for (const path of paths) {
+      files.push({ path, ...(await describeFile(join(workspace.path, ...path.split('/')))) })
+    }
+    return json({ ok: true, workspace: { id: workspace.id, title: workspace.title }, files })
+  } catch (error) {
+    return json({ ok: false, code: 'files-failed', message: messageOf(error) })
+  }
+}
+
+/**
+ * Answer a read request for one scope.
+ * @param query - the request's scope parameters.
+ * @param registry - the workspace registry.
+ * @returns the JSON response.
+ */
+async function handleRead(query, registry) {
+  const request = query.scope === 'project'
+    ? { scope: 'project', workspaceId: query.workspaceId, path: query.path }
+    : { scope: 'global' }
+  const resolved = resolveRequest(request, registry)
+  if (resolved === undefined) {
+    return json({ ok: false, code: 'unknown-target', message: `unknown target ${JSON.stringify(query)}` })
+  }
+  try {
+    return json({ ok: true, display: resolved.display, absolutePath: resolved.file, ...(await readAgents(resolved.file)) })
   } catch (error) {
     return json({ ok: false, code: 'read-failed', message: messageOf(error) })
   }
 }
 
 /**
- * Answer a write request for one target.
+ * Answer a write request for one scope.
  * @param registry - the workspace registry.
  * @param request - the buffered request.
  * @returns the JSON response.
@@ -257,8 +362,10 @@ async function handleWrite(registry, request) {
   if (Buffer.byteLength(body.text, 'utf8') > MAX_BYTES) {
     return json({ ok: false, code: 'too-large', message: `the content exceeds ${MAX_BYTES} bytes` })
   }
-  const resolved = resolveTarget(body.target, registry)
-  if (resolved === undefined) return json({ ok: false, code: 'unknown-target', message: `unknown target ${String(body.target)}` })
+  const resolved = resolveRequest(body, registry)
+  if (resolved === undefined) {
+    return json({ ok: false, code: 'unknown-target', message: 'unknown target' })
+  }
   try {
     const stored = await saveAgents(resolved.file, body.text, body.expectedVersion ?? null)
     if (!stored.ok) {
@@ -269,7 +376,7 @@ async function handleWrite(registry, request) {
         version: stored.version,
       })
     }
-    return json({ ok: true, target: body.target, display: resolved.display, absolutePath: resolved.file, ...stored })
+    return json({ ok: true, display: resolved.display, absolutePath: resolved.file, ...stored })
   } catch (error) {
     return json({ ok: false, code: 'write-failed', message: messageOf(error) })
   }
@@ -294,10 +401,27 @@ export function apply(ctx) {
   ctx.effect(
     () =>
       ctx.connection.fetch.register({
+        path: FILES_PATH,
+        methods: ['GET'],
+        requestBody: 'buffered',
+        fetch: (request) => handleFiles(new URL(request.url).searchParams.get('workspace') ?? '', registry()),
+      }),
+    'global-agents-md: files route',
+  )
+  ctx.effect(
+    () =>
+      ctx.connection.fetch.register({
         path: READ_PATH,
         methods: ['GET'],
         requestBody: 'buffered',
-        fetch: (request) => handleRead(new URL(request.url).searchParams.get('target') ?? GLOBAL_TARGET, registry()),
+        fetch: (request) => {
+          const params = new URL(request.url).searchParams
+          return handleRead({
+            scope: params.get('scope') ?? 'global',
+            workspaceId: params.get('workspace') ?? undefined,
+            path: params.get('path') ?? undefined,
+          }, registry())
+        },
       }),
     'global-agents-md: read route',
   )

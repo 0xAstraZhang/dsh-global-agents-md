@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Editor de regras globais",
-    "description": "Abra «Regras globais» na barra lateral esquerda, abaixo de Plug-ins e Automações, para editar o AGENTS.md global do usuário do DSH e o AGENTS.md de qualquer espaço de trabalho registrado sem procurar os arquivos. A gravação é atômica e recusa sobrescrever um arquivo alterado depois de carregado. As alterações valem para novas sessões."
+    "description": "Abra «Regras globais» na barra lateral esquerda, abaixo de Plug-ins e Automações, para editar o AGENTS.md global do usuário do DSH e qualquer arquivo de regras de um espaço de trabalho; os AGENTS.md aninhados aparecem ao lado do da raiz, e Novo cria um em um subdiretório. A gravação é atômica e não sobrescreve um arquivo alterado após o carregamento; o Host resolve cada caminho. As alterações valem para novas sessões."
   }
 }

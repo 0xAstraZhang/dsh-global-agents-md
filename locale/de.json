@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Editor für globale Regeln",
-    "description": "Öffnen Sie „Globale Regeln“ in der linken Seitenleiste unter „Plugins“ und „Automatisierung“, um die benutzerglobale AGENTS.md von DSH und die AGENTS.md jedes registrierten Arbeitsbereichs zu bearbeiten, ohne die Dateien zu suchen. Gespeichert wird atomar; ein Speichern wird abgelehnt, wenn sich die Datei nach dem Laden geändert hat. Änderungen gelten für neue Sitzungen."
+    "description": "Öffnen Sie „Globale Regeln“ in der linken Seitenleiste unter „Plugins“ und „Automatisierung“, um die benutzerglobale AGENTS.md von DSH und jede Projektregel-Datei eines Arbeitsbereichs zu bearbeiten; verschachtelte AGENTS.md-Dateien stehen neben der im Wurzelverzeichnis, und „Neu“ legt eine in einem Unterverzeichnis an. Gespeichert wird atomar ohne Überschreiben einer nach dem Laden geänderten Datei, und der Host löst jeden Pfad selbst auf. Änderungen gelten für neue Sitzungen."
   }
 }
