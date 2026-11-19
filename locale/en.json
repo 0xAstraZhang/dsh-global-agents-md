@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Global rules editor",
-    "description": "Open Global rules in the left sidebar, below Plugins and Automations, to edit DSH's user-global AGENTS.md and any project rules file in a workspace; nested AGENTS.md files are listed beside the root one, and New creates one under a subdirectory. Saves are atomic and refuse to clobber a file changed after loading, and the Host resolves every path so the page cannot address arbitrary files. Changes apply to new sessions."
+    "description": "Open Global rules in the left sidebar, below Plugins and Automations, to edit DSH's user-global AGENTS.md (~/.dsh/AGENTS.md) without locating the file. Saves are atomic and refuse to clobber a file changed after loading. Changes apply to new sessions, not the current one."
   }
 }
