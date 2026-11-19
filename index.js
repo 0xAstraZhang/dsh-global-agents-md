@@ -1,19 +1,24 @@
 /**
  * Host half of the global rules editor.
  *
- * The browser half edits the one file `@deepseek-ai/dsh-agent-instructions`
- * loads as the user-global chain — `$DSH_HOME/AGENTS.md` — through two exact
- * Fetch routes, so no generated Remote namespace is involved.
+ * The browser half edits two AGENTS.md files: the user-global one that
+ * `@deepseek-ai/dsh-agent-instructions` loads for every session, and the one at
+ * the root of a registered workspace. Both are reached through exact Fetch
+ * routes, so no generated Remote namespace is involved.
  */
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-export const inject = ['connection']
+export const inject = ['connection', 'workspaceRegistry']
 
+const TARGETS_PATH = '/api/global-agents-md/targets'
 const READ_PATH = '/api/global-agents-md/read'
 const WRITE_PATH = '/api/global-agents-md/write'
+
+/** The target key that addresses the user-global file. */
+const GLOBAL_TARGET = 'global'
 
 /** Cap on the file the editor writes back, in bytes. */
 const MAX_BYTES = 256 * 1024
@@ -42,7 +47,7 @@ export function resolveDshHome(env = process.env) {
 }
 
 /**
- * Describe the edited file symbolically for user-facing text.
+ * Describe the user-global file symbolically for user-facing text.
  * @param env - the environment to read; defaults to the process environment.
  * @returns `~/.dsh/AGENTS.md`, or `$DSH_HOME/AGENTS.md` when the home is configured.
  */
@@ -60,12 +65,52 @@ export function agentsMdPath(env = process.env) {
 }
 
 /**
+ * Name the target that addresses one workspace's project file.
+ * @param workspaceId - the registered workspace id.
+ * @returns the target key.
+ */
+export function workspaceTarget(workspaceId) {
+  return `workspace:${workspaceId}`
+}
+
+/**
+ * Resolve a target key to the file it edits.
+ * @param target - `global` or `workspace:<id>`.
+ * @param registry - the workspace registry, when available.
+ * @returns the resolved target, or undefined when the target is unknown.
+ */
+export function resolveTarget(target, registry) {
+  if (target === GLOBAL_TARGET) {
+    return { file: agentsMdPath(), display: displayAgentsPath() }
+  }
+  if (typeof target !== 'string' || !target.startsWith('workspace:')) return undefined
+  const workspace = registry?.get(target.slice('workspace:'.length))
+  if (workspace === undefined) return undefined
+  return { file: join(workspace.path, 'AGENTS.md'), display: `${workspace.title}/AGENTS.md` }
+}
+
+/**
  * Identify one text version so a save can detect an edit made elsewhere.
  * @param text - the file content.
  * @returns the content hash.
  */
 function versionOf(text) {
   return createHash('sha1').update(text, 'utf8').digest('hex')
+}
+
+/**
+ * Report whether a file exists and how large it is, without reading it.
+ * @param file - absolute path of the file.
+ * @returns the presence and byte size.
+ */
+export async function describeFile(file) {
+  try {
+    const info = await stat(file)
+    return { exists: true, bytes: info.size }
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false, bytes: 0 }
+    throw error
+  }
 }
 
 /**
@@ -138,7 +183,7 @@ function json(body) {
 }
 
 /**
- * Describe one failure for the browser half.
+ * Describe one thrown value.
  * @param error - the thrown value.
  * @returns the message text.
  */
@@ -147,27 +192,59 @@ function messageOf(error) {
 }
 
 /**
- * Answer a read request.
- * @param file - absolute path of the edited file.
- * @param display - the symbolic path shown in the page.
+ * Answer the target list: the global file and every registered workspace.
+ * @param registry - the workspace registry.
  * @returns the JSON response.
  */
-async function handleRead(file, display) {
+async function handleTargets(registry) {
   try {
-    return json({ ok: true, display, absolutePath: file, ...(await readAgents(file)) })
+    const workspaces = []
+    for (const workspace of registry?.list() ?? []) {
+      const target = workspaceTarget(workspace.id)
+      try {
+        workspaces.push({
+          target,
+          title: workspace.title,
+          display: `${workspace.title}/AGENTS.md`,
+          ...(await describeFile(join(workspace.path, 'AGENTS.md'))),
+        })
+      } catch (error) {
+        workspaces.push({ target, title: workspace.title, display: `${workspace.title}/AGENTS.md`, exists: false, bytes: 0, error: messageOf(error) })
+      }
+    }
+    return json({
+      ok: true,
+      global: { target: GLOBAL_TARGET, display: displayAgentsPath(), ...(await describeFile(agentsMdPath())) },
+      workspaces,
+    })
+  } catch (error) {
+    return json({ ok: false, code: 'targets-failed', message: messageOf(error) })
+  }
+}
+
+/**
+ * Answer a read request for one target.
+ * @param target - the target key.
+ * @param registry - the workspace registry.
+ * @returns the JSON response.
+ */
+async function handleRead(target, registry) {
+  const resolved = resolveTarget(target, registry)
+  if (resolved === undefined) return json({ ok: false, code: 'unknown-target', message: `unknown target ${String(target)}` })
+  try {
+    return json({ ok: true, target, display: resolved.display, absolutePath: resolved.file, ...(await readAgents(resolved.file)) })
   } catch (error) {
     return json({ ok: false, code: 'read-failed', message: messageOf(error) })
   }
 }
 
 /**
- * Answer a write request.
- * @param file - absolute path of the edited file.
- * @param display - the symbolic path shown in the page.
+ * Answer a write request for one target.
+ * @param registry - the workspace registry.
  * @param request - the buffered request.
  * @returns the JSON response.
  */
-async function handleWrite(file, display, request) {
+async function handleWrite(registry, request) {
   let body
   try {
     body = await request.json()
@@ -180,8 +257,10 @@ async function handleWrite(file, display, request) {
   if (Buffer.byteLength(body.text, 'utf8') > MAX_BYTES) {
     return json({ ok: false, code: 'too-large', message: `the content exceeds ${MAX_BYTES} bytes` })
   }
+  const resolved = resolveTarget(body.target, registry)
+  if (resolved === undefined) return json({ ok: false, code: 'unknown-target', message: `unknown target ${String(body.target)}` })
   try {
-    const stored = await saveAgents(file, body.text, body.expectedVersion ?? null)
+    const stored = await saveAgents(resolved.file, body.text, body.expectedVersion ?? null)
     if (!stored.ok) {
       return json({
         ok: false,
@@ -190,26 +269,35 @@ async function handleWrite(file, display, request) {
         version: stored.version,
       })
     }
-    return json({ ok: true, display, absolutePath: file, ...stored })
+    return json({ ok: true, target: body.target, display: resolved.display, absolutePath: resolved.file, ...stored })
   } catch (error) {
     return json({ ok: false, code: 'write-failed', message: messageOf(error) })
   }
 }
 
 /**
- * Register the editor's two routes for the life of this plugin.
+ * Register the editor's routes for the life of this plugin.
  * @param ctx - the plugin context.
  */
 export function apply(ctx) {
-  const file = agentsMdPath()
-  const display = displayAgentsPath()
+  const registry = () => ctx.workspaceRegistry
+  ctx.effect(
+    () =>
+      ctx.connection.fetch.register({
+        path: TARGETS_PATH,
+        methods: ['GET'],
+        requestBody: 'buffered',
+        fetch: () => handleTargets(registry()),
+      }),
+    'global-agents-md: targets route',
+  )
   ctx.effect(
     () =>
       ctx.connection.fetch.register({
         path: READ_PATH,
         methods: ['GET'],
         requestBody: 'buffered',
-        fetch: () => handleRead(file, display),
+        fetch: (request) => handleRead(new URL(request.url).searchParams.get('target') ?? GLOBAL_TARGET, registry()),
       }),
     'global-agents-md: read route',
   )
@@ -219,7 +307,7 @@ export function apply(ctx) {
         path: WRITE_PATH,
         methods: ['POST'],
         requestBody: 'buffered',
-        fetch: (request) => handleWrite(file, display, request),
+        fetch: (request) => handleWrite(registry(), request),
       }),
     'global-agents-md: write route',
   )
